@@ -1,322 +1,319 @@
 #!/usr/bin/env python3
-"""THE SKY IS AN OCEAN -- coolest-art-01 entry.
+"""ONE THOUSAND FOLDS - coolest-art-01 V2 entry.
 
-A colossal whale in pure dark silhouette swims across a giant low sun at
-dusk, over a tiny city skyline, above a dark sea. 1024x1024 RGB PNG,
-drawn procedurally with the Python standard library only. Deterministic:
-the same bytes on every run (no clock, no network, no unseeded random).
+A colossal origami paper crane in flat cream flies toward a giant flat
+vermilion sun over an indigo sea, above a tiny coastal village with a red
+torii gate, tiny fishermen in boats, and Hokusai sine-wave curves.
+Ukiyo-e palette, procedural 5x7 bitmap title, hanko seal.
+Pure Python 3.13 standard library. Deterministic: same bytes every run.
 """
 
+import math
 import os
 import random
 import struct
 import zlib
-from math import sqrt
 
 W = 1024
 H = 1024
 
-
+# ---------------------------------------------------------------- palette
 def hx(s):
-    s = s.lstrip("#")
     return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
 
+DEEP      = hx("101D42")
+INDIGO_A  = hx("16294F")
+INDIGO_B  = hx("1E3566")
+INDIGO_C  = hx("2A4480")
+HORIZON   = hx("33508C")
+SEA_TOP   = hx("0C1836")
+SEA_BOT   = hx("081020")
+VERMILION = hx("D9381E")
+CLOUD_DK  = hx("8A1F14")
+CLOUD_MD  = hx("A82618")
+CREAM     = hx("FFF6E0")
+CREAM_DK  = hx("EAD9A8")
+GOLD      = hx("E8C878")
+GOLD_FOLD = hx("D9B96A")
+WARM_GOLD = hx("FFC46B")
+DARK      = hx("0A0F24")
+WALL      = hx("F5E6C8")
+ROOF      = hx("1A2340")
+TEXT_C    = hx("FFF3D6")
+WHITE     = (255, 255, 255)
+STAR_WM   = hx("FFD9A0")
 
-SKY_STOPS = [
-    (0, hx("0E0E2A")),
-    (200, hx("1E1C4A")),
-    (380, hx("4A2A58")),
-    (560, hx("A34A3C")),
-    (720, hx("E07B39")),
-    (820, hx("F5A83D")),
-    (880, hx("3A1F3D")),
-    (1024, hx("0A0A18")),
-]
+# canvas: RGB bytearray
+px = bytearray(W * H * 3)
 
-SUN_OUTER = hx("FFB347")
-SUN_CORE = hx("FFD27A")
-GLOW_INNER = hx("FFC46B")
-WHALE = hx("10182E")
-CLOUD_A = hx("3A2050")
-CLOUD_B = hx("8A4030")
-BIRD = hx("14142A")
-CITY = hx("0C0C1E")
-WINDOW = hx("FFC46B")
-SEA = hx("08081A")
-SPOUT = hx("FFD9A0")
-TITLE = hx("FFF3D6")
-STAR_WARM = hx("FFD9A0")
-ANTENNA_DOT = hx("FF4D4D")
-WHITE = (255, 255, 255)
+# ---------------------------------------------------------------- helpers
+def _put(x, y, c):
+    if 0 <= x < W and 0 <= y < H:
+        i = (y * W + x) * 3
+        px[i] = c[0]
+        px[i + 1] = c[1]
+        px[i + 2] = c[2]
 
-# ------------------------------------------------------------------ canvas
-
-img = [bytearray(W * 3) for _ in range(H)]
-
-
-def fill_row(y, color):
-    img[y][:] = bytes(color) * W
-
-
-def span(y, x0, x1, color):
-    if y < 0 or y >= H:
+def fill_rect(x0, y0, x1, y1, c):
+    x0 = max(int(x0), 0)
+    y0 = max(int(y0), 0)
+    x1 = min(int(x1), W - 1)
+    y1 = min(int(y1), H - 1)
+    if x1 < x0 or y1 < y0:
         return
-    x0 = max(0, x0)
-    x1 = min(W, x1)
-    if x0 >= x1:
+    row = bytes(c) * (x1 - x0 + 1)
+    n = (x1 - x0 + 1) * 3
+    for y in range(y0, y1 + 1):
+        s = (y * W + x0) * 3
+        px[s:s + n] = row
+
+def fill_poly(pts, c):
+    n = len(pts)
+    if n < 3:
         return
-    img[y][x0 * 3:x1 * 3] = bytes(color) * (x1 - x0)
-
-
-def rect(x0, y0, x1, y1, color):
-    for y in range(max(0, y0), min(H, y1)):
-        span(y, x0, x1, color)
-
-
-def disc(cx, cy, r, color):
-    r2 = r * r
-    y0 = max(0, cy - r)
-    y1 = min(H - 1, cy + r)
-    for y in range(y0, y1 + 1):
-        dy = y - cy
-        dx = int(sqrt(r2 - dy * dy))
-        span(y, cx - dx, cx + dx + 1, color)
-
-
-def ellipse(cx, cy, rx, ry, color):
-    y0 = max(0, cy - ry)
-    y1 = min(H - 1, cy + ry)
-    for y in range(y0, y1 + 1):
-        dy = (y - cy) / ry
-        dx = int(rx * sqrt(max(0.0, 1.0 - dy * dy)))
-        span(y, cx - dx, cx + dx + 1, color)
-
-
-def triangle(p1, p2, p3, color):
-    pts = sorted((p1, p2, p3), key=lambda p: p[1])
-    (x1, y1), (x2, y2), (x3, y3) = pts
-
-    def ix(xa, ya, xb, yb, y):
-        if yb == ya:
-            return float(xa)
-        return xa + (xb - xa) * (y - ya) / (yb - ya)
-
-    for y in range(max(0, y1), min(H - 1, y3) + 1):
-        if y < y2:
-            xa = ix(x1, y1, x2, y2, y)
-            xb = ix(x1, y1, x3, y3, y)
+    edges = []
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        if y0 == y1:
+            continue
+        if y0 < y1:
+            edges.append((y0, y1, x0, (x1 - x0) / (y1 - y0)))
         else:
-            xa = ix(x2, y2, x3, y3, y)
-            xb = ix(x1, y1, x3, y3, y)
-        span(y, int(min(xa, xb)), int(max(xa, xb)) + 1, color)
+            edges.append((y1, y0, x1, (x0 - x1) / (y0 - y1)))
+    if not edges:
+        return
+    y_lo = int(math.floor(min(e[0] for e in edges)))
+    y_hi = int(math.ceil(max(e[1] for e in edges)))
+    cb = bytes(c)
+    for y in range(max(y_lo, 0), min(y_hi, H - 1) + 1):
+        xs = []
+        for (ymin, ymax, x_at_min, slope) in edges:
+            if ymin <= y < ymax:
+                xs.append(x_at_min + slope * (y - ymin))
+        if len(xs) < 2:
+            continue
+        xs.sort()
+        for k in range(0, len(xs) - 1, 2):
+            xa = int(math.ceil(xs[k]))
+            xb = int(math.floor(xs[k + 1]))
+            if xb < xa:
+                continue
+            xa = max(xa, 0)
+            xb = min(xb, W - 1)
+            if xb < xa:
+                continue
+            s = (y * W + xa) * 3
+            px[s:s + (xb - xa + 1) * 3] = cb * (xb - xa + 1)
 
+def fill_disc(cx, cy, r, c):
+    cb = bytes(c)
+    for y in range(max(cy - r, 0), min(cy + r, H - 1) + 1):
+        dy = y - cy
+        dx = int(math.sqrt(r * r - dy * dy))
+        xa = max(cx - dx, 0)
+        xb = min(cx + dx, W - 1)
+        s = (y * W + xa) * 3
+        px[s:s + (xb - xa + 1) * 3] = cb * (xb - xa + 1)
 
-def thick_line(x0, y0, x1, y1, color, w):
-    steps = max(abs(x1 - x0), abs(y1 - y0), 1) + 1
-    half = w // 2
-    for i in range(steps + 1):
-        t = i / steps
-        x = int(round(x0 + (x1 - x0) * t))
-        y = int(round(y0 + (y1 - y0) * t))
-        for yy in range(y - half, y + half + 1):
-            span(yy, x - half, x + half + 1, color)
+def fill_ellipse(cx, cy, rx, ry, c):
+    cb = bytes(c)
+    for y in range(max(cy - ry, 0), min(cy + ry, H - 1) + 1):
+        dy = (y - cy) / ry
+        dx = int(rx * math.sqrt(max(0.0, 1.0 - dy * dy)))
+        xa = max(cx - dx, 0)
+        xb = min(cx + dx, W - 1)
+        s = (y * W + xa) * 3
+        px[s:s + (xb - xa + 1) * 3] = cb * (xb - xa + 1)
 
+def thick_line(x0, y0, x1, y1, w, c):
+    dx = x1 - x0
+    dy = y1 - y0
+    L = math.hypot(dx, dy)
+    if L == 0:
+        return
+    nx = -dy / L * (w / 2.0)
+    ny = dx / L * (w / 2.0)
+    fill_poly([(x0 + nx, y0 + ny), (x1 + nx, y1 + ny),
+               (x1 - nx, y1 - ny), (x0 - nx, y0 - ny)], c)
 
-def lerp(a, b, t):
-    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+def lerp_c(c0, c1, t):
+    return (round(c0[0] + (c1[0] - c0[0]) * t),
+            round(c0[1] + (c1[1] - c0[1]) * t),
+            round(c0[2] + (c1[2] - c0[2]) * t))
 
-
-def sky_at(y):
-    for i in range(len(SKY_STOPS) - 1):
-        y0, c0 = SKY_STOPS[i]
-        y1, c1 = SKY_STOPS[i + 1]
+def grad_color(stops, y):
+    for i in range(len(stops) - 1):
+        y0, c0 = stops[i]
+        y1, c1 = stops[i + 1]
         if y0 <= y <= y1:
             t = 0.0 if y1 == y0 else (y - y0) / (y1 - y0)
-            return lerp(c0, c1, t)
-    return SKY_STOPS[-1][1]
+            return lerp_c(c0, c1, t)
+    return stops[-1][1]
 
-
-# ------------------------------------------------------------------ font
-
+# ---------------------------------------------------------------- bitmap font (5x7, cell 4px)
 FONT = {
-    "T": ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
-    "H": ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
-    "E": ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-    "S": ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
-    "K": ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
-    "Y": ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
-    "I": ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
-    "A": ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-    "N": ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
-    "O": ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-    "C": ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
+    'O': ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+    'N': ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+    'E': ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+    'T': ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+    'H': ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+    'U': ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+    'S': ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+    'A': ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+    'D': ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+    'F': ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+    'L': ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
 }
 
-
-def draw_text(text, y0, color):
-    cell = 4
-    adv = 24
-    total = len(text) * adv - 4
-    x = 512 - total // 2
-    for ch in text:
-        if ch == " ":
-            x += adv
+def draw_text(s, x0, y0, c):
+    for i, ch in enumerate(s):
+        if ch == ' ':
             continue
-        glyph = FONT[ch]
+        g = FONT[ch]
+        cx = x0 + i * 24
         for r in range(7):
-            row = glyph[r]
-            for c in range(5):
-                if row[c] == "1":
-                    rect(x + c * cell, y0 + r * cell,
-                         x + c * cell + cell, y0 + r * cell + cell, color)
-        x += adv
+            row = g[r]
+            for col in range(5):
+                if row[col] == '1':
+                    fill_rect(cx + col * 4, y0 + r * 4,
+                              cx + col * 4 + 3, y0 + r * 4 + 3, c)
 
-
-# ------------------------------------------------------------------ scene
-
-def draw():
-    # 1. sky gradient, one colour per row
-    for y in range(H):
-        fill_row(y, sky_at(y))
-
-    # 2. stars, top region only
-    rng = random.Random(12345)
-    for _ in range(50):
-        x = rng.randrange(0, W)
-        y = rng.randrange(0, 321)
-        s = 1 if rng.random() < 0.6 else 2
-        c = WHITE if rng.random() < 0.7 else STAR_WARM
-        rect(x, y, x + s, y + s, c)
-
-    # 3. sun glow: 24 concentric discs, largest first, sky -> warm amber
-    base = sky_at(610)
-    for i in range(24):
-        r = 405 - 5 * i
-        disc(512, 610, r, lerp(base, GLOW_INNER, i / 23.0))
-
-    # 4. clouds, behind the sun
-    for (cx, cy, rx, ry) in [(120, 400, 90, 14), (220, 395, 110, 16),
-                             (330, 402, 100, 13), (430, 398, 80, 12)]:
-        ellipse(cx, cy, rx, ry, CLOUD_A)
-    for (cx, cy, rx, ry) in [(620, 690, 90, 13), (730, 685, 110, 15),
-                             (850, 692, 95, 12), (940, 688, 70, 11)]:
-        ellipse(cx, cy, rx, ry, CLOUD_B)
-
-    # 5. sun disc, two-tone
-    disc(512, 610, 285, SUN_OUTER)
-    disc(512, 610, 210, SUN_CORE)
-
-    # 6. whale: chain of overlapping discs, fins, spout
-    spine = [(195, 562, 50), (250, 550, 68), (310, 540, 82),
-             (375, 532, 92), (445, 530, 95), (515, 533, 90),
-             (580, 542, 78), (640, 552, 62), (695, 558, 45),
-             (730, 562, 32)]
-    for (cx, cy, r) in spine:
-        disc(cx, cy, r, WHALE)
-    triangle((730, 562), (830, 478), (812, 548), WHALE)   # tail, upper lobe
-    triangle((730, 562), (828, 648), (808, 578), WHALE)   # tail, lower lobe
-    triangle((555, 445), (600, 405), (615, 452), WHALE)   # dorsal fin
-    triangle((430, 615), (480, 665), (455, 608), WHALE)   # pectoral fin
-    thick_line(300, 452, 288, 418, SPOUT, 3)
-    thick_line(300, 452, 300, 410, SPOUT, 3)
-    thick_line(300, 452, 312, 418, SPOUT, 3)
-    for (dx, dy) in [(288, 412), (300, 404), (312, 412)]:
-        rect(dx, dy, dx + 2, dy + 2, SPOUT)
-
-    # 7. birds: six small chevrons
-    for (bx, by) in [(140, 330), (260, 360), (420, 315),
-                     (640, 345), (780, 395), (900, 330)]:
-        thick_line(bx, by, bx + 6, by + 6, BIRD, 2)
-        thick_line(bx + 6, by + 6, bx + 12, by, BIRD, 2)
-
-    # 8. city skyline
-    rng2 = random.Random(777)
-    x = 0
-    buildings = []
-    while x < W:
-        w = rng2.randrange(30, 91)
-        top = rng2.randrange(790, 861)
-        buildings.append((x, top, min(W, x + w)))
-        x += w
-    for (bx0, top, bx1) in buildings:
-        rect(bx0, top, bx1, H, CITY)
-    for idx in (2, 7, 12):  # set-back tops
-        if idx < len(buildings):
-            bx0, top, bx1 = buildings[idx]
-            w = bx1 - bx0
-            rect(bx0 + w // 4, top - 26, bx1 - w // 4, top, CITY)
-    antennas = []
-    for idx in (4, 9, 15):  # antenna spires
-        if idx < len(buildings):
-            bx0, top, bx1 = buildings[idx]
-            ax = (bx0 + bx1) // 2
-            hgt = rng2.randrange(20, 41)
-            antennas.append((ax, top, hgt))
-            rect(ax - 1, top - hgt, ax + 1, top, CITY)
-    if antennas:  # one red tip light
-        ax, top, hgt = antennas[0]
-        rect(ax - 1, top - hgt - 2, ax + 2, top - hgt + 1, ANTENNA_DOT)
-    rng3 = random.Random(2026)
-    for _ in range(12):  # sparse warm windows
-        bx0, top, bx1 = buildings[rng3.randrange(len(buildings))]
-        wx = rng3.randrange(bx0 + 4, max(bx0 + 5, bx1 - 7))
-        wy = rng3.randrange(top + 12, 876)
-        rect(wx, wy, wx + 3, wy + 4, WINDOW)
-
-    # 9. foreground sea band + sun-reflection shimmer
-    # (bars sit clear of the title zone y 925-965)
-    for y in range(880, H):
-        fill_row(y, SEA)
-    shim = [lerp(hx("C65A35"), hx("F5A83D"), i / 3.0) for i in range(4)]
-    for i, (sy, sw) in enumerate([(892, 120), (912, 90), (972, 60), (992, 40)]):
-        x0 = 512 - sw // 2
-        for y in range(sy, sy + 4):
-            span(y, x0, x0 + sw, shim[i])
-
-    # 10. title
-    draw_text("THE SKY IS AN OCEAN", 930, TITLE)
-
-
-# ------------------------------------------------------------------ PNG out
-
+# ---------------------------------------------------------------- PNG encoder
 def png_chunk(typ, data):
-    out = struct.pack(">I", len(data)) + typ + data
-    out += struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
-    return out
+    return (struct.pack(">I", len(data)) + typ + data +
+            struct.pack(">I", zlib.crc32(typ + data) & 0xffffffff))
 
-
-def encode_png():
-    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+def write_png(path):
     raw = bytearray()
-    prev = bytearray(W * 3)
-    for row in img:
-        none_sum = sum(row)
-        up = bytes((a - b) & 0xFF for a, b in zip(row, prev))
-        up_sum = 0
-        for v in up:
-            up_sum += v if v < 128 else 256 - v
-        if up_sum < none_sum:
-            raw.append(2)  # filter type 2 = Up (difference from row above)
-            raw += up
-        else:
-            raw.append(0)
-            raw += row
-        prev = row
-    idat = zlib.compress(bytes(raw), 9)
-    return (b"\x89PNG\r\n\x1a\n"
-            + png_chunk(b"IHDR", ihdr)
-            + png_chunk(b"IDAT", idat)
-            + png_chunk(b"IEND", b""))
+    for y in range(H):
+        raw.append(0)  # filter: none
+        raw += px[y * W * 3:(y + 1) * W * 3]
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+    out = b"\x89PNG\r\n\x1a\n"
+    out += png_chunk(b"IHDR", ihdr)
+    out += png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    out += png_chunk(b"IEND", b"")
+    with open(path, "wb") as f:
+        f.write(out)
 
-
+# ---------------------------------------------------------------- scene
 def main():
-    draw()
-    png = encode_png()
+    # 1. sky gradient (per row)
+    sky_stops = [(0, DEEP), (200, INDIGO_A), (400, INDIGO_B),
+                 (550, INDIGO_C), (700, HORIZON)]
+    for y in range(0, 700):
+        c = grad_color(sky_stops, y)
+        s = y * W * 3
+        px[s:s + W * 3] = bytes(c) * W
+    # sea gradient
+    sea_stops = [(700, SEA_TOP), (1024, SEA_BOT)]
+    for y in range(700, H):
+        c = grad_color(sea_stops, y)
+        s = y * W * 3
+        px[s:s + W * 3] = bytes(c) * W
+
+    # 2. stars (top region only, fixed seed)
+    rng = random.Random(777)
+    for _ in range(35):
+        x = rng.randrange(0, W)
+        y = rng.randrange(0, 251)
+        sz = 1 if rng.random() < 0.5 else 2
+        c = WHITE if rng.random() < 0.6 else STAR_WM
+        fill_rect(x, y, x + sz - 1, y + sz - 1, c)
+
+    # 3. red cloud bands (before the sun)
+    for (cx, cy, rx, ry) in [(90, 170, 80, 12), (190, 165, 100, 14),
+                              (300, 172, 90, 12), (380, 168, 70, 11)]:
+        fill_ellipse(cx, cy, rx, ry, CLOUD_DK)
+    for (cx, cy, rx, ry) in [(120, 540, 85, 13), (230, 535, 105, 15),
+                              (340, 542, 90, 12), (440, 538, 70, 11)]:
+        fill_ellipse(cx, cy, rx, ry, CLOUD_MD)
+
+    # 4. vermilion sun disc (flat)
+    fill_disc(720, 290, 150, VERMILION)
+
+    # 5. sea waves: cream sine + parallel gold sine
+    for cy in (760, 830, 900, 985):
+        for x in range(W):
+            ph = 2 * math.pi * x / 150.0
+            y = int(round(cy + 12 * math.sin(ph)))
+            _put(x, y - 1, CREAM)
+            _put(x, y, CREAM)
+            _put(x, y + 1, CREAM)
+            gy = int(round(cy + 6 + 12 * math.sin(ph)))
+            _put(x, gy, GOLD)
+            _put(x, gy + 1, GOLD)
+    # sun reflection bars (after waves)
+    for (y, wdt, c) in [(735, 90, VERMILION), (770, 65, GOLD),
+                         (805, 45, VERMILION), (840, 30, GOLD)]:
+        x0 = 720 - wdt // 2
+        fill_rect(x0, y, x0 + wdt - 1, y + 3, c)
+
+    # 6. island + village + figures + torii
+    fill_poly([(0, 700), (340, 700), (300, 665), (180, 655),
+               (60, 668), (0, 675)], DARK)
+    houses = [
+        ((40, 632, 35, 28), (38, 632, 77, 632, 58, 618), [(55, 645)]),
+        ((90, 628, 40, 32), (88, 628, 132, 628, 110, 612), [(105, 642)]),
+        ((150, 636, 35, 24), (148, 636, 187, 636, 168, 622), []),
+        ((200, 630, 40, 30), (198, 630, 242, 630, 220, 614), [(215, 644)]),
+        ((255, 640, 30, 20), (253, 640, 287, 640, 270, 628), []),
+    ]
+    for (wx, wy, ww, wh), (rx0, ry0, rx1, ry1, rtx, rty), wins in houses:
+        fill_rect(wx, wy, wx + ww - 1, wy + wh - 1, WALL)
+        fill_poly([(rx0, ry0), (rx1, ry1), (rtx, rty)], ROOF)
+        for (vx, vy) in wins:
+            fill_rect(vx, vy, vx + 1, vy + 2, WARM_GOLD)
+    # tiny figures looking up at the crane
+    for fx in (100, 160, 220):
+        fill_rect(fx, 652, fx + 2, 659, DARK)
+    # torii gate (vermilion)
+    fill_rect(298, 615, 301, 659, VERMILION)
+    fill_rect(318, 615, 321, 659, VERMILION)
+    fill_rect(292, 612, 327, 617, VERMILION)
+    fill_rect(296, 626, 323, 629, VERMILION)
+
+    # 7. boats
+    fill_poly([(680, 820), (720, 820), (714, 832), (686, 832)], DARK)
+    fill_rect(699, 795, 700, 820, DARK)          # mast
+    fill_poly([(700, 795), (700, 820), (716, 820)], CREAM)  # sail
+    fill_rect(698, 813, 700, 819, DARK)          # fisherman 1
+    fill_poly([(405, 905), (435, 905), (430, 914), (410, 914)], DARK)
+    fill_rect(418, 899, 420, 904, DARK)          # fisherman 2
+
+    # 8. crane far wing (darker cream, behind body)
+    fill_poly([(400, 412), (520, 404), (330, 235)], CREAM_DK)
+    # 9. body diamond (two triangles)
+    fill_poly([(615, 432), (248, 448), (430, 382)], CREAM)
+    fill_poly([(615, 432), (430, 478), (248, 448)], CREAM)
+    # 10. neck + head + beak (neck base lowered into the body so the
+    # neck-body join is solid cream with no sky showing through)
+    fill_poly([(548, 425), (578, 438), (714, 308), (698, 292)], CREAM)
+    fill_poly([(698, 292), (714, 308), (738, 300)], CREAM)
+    fill_poly([(738, 300), (762, 308), (738, 316)], VERMILION)
+    # 11. near wing (big triangle, cream)
+    fill_poly([(360, 398), (540, 392), (215, 155)], CREAM)
+    # 12. tail (flat triangle)
+    fill_poly([(255, 435), (145, 510), (275, 468)], CREAM)
+    # 13. fold lines (gold, inside their shapes)
+    thick_line(400, 394, 265, 225, 3, GOLD_FOLD)
+    thick_line(255, 450, 175, 490, 2, GOLD_FOLD)
+
+    # 14. title
+    draw_text("ONE THOUSAND FOLDS", 296, 930, TEXT_C)
+
+    # 15. hanko seal (bottom-right)
+    fill_rect(940, 940, 965, 965, VERMILION)
+    fill_rect(945, 945, 960, 946, WHITE)
+    fill_rect(945, 959, 960, 960, WHITE)
+    fill_rect(945, 945, 946, 960, WHITE)
+    fill_rect(959, 945, 960, 960, WHITE)
+    fill_rect(948, 952, 957, 954, WHITE)
+
     outdir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(outdir, exist_ok=True)
-    with open(os.path.join(outdir, "entry.png"), "wb") as f:
-        f.write(png)
-
+    write_png(os.path.join(outdir, "entry.png"))
 
 if __name__ == "__main__":
     main()
